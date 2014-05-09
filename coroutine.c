@@ -1,7 +1,14 @@
+
 #include "coroutine.h"
 #include <stdio.h>
 #include <stdlib.h>
+
+#ifndef _ON_MAC_
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
+
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
@@ -156,22 +163,22 @@ coroutine_resume(struct schedule * S, int id) {
 	switch(status) {
 	case COROUTINE_READY:
         printf("coroutine:[%d] COROUTINE_READY\n", id);
-		getcontext(&C->ctx);
-		C->ctx.uc_stack.ss_sp = S->stack; //对于context,  stack需要自己分配给它
+		getcontext(&C->ctx);//这个调用 ，将会使ctx内的东西和当前的上下文关联上（ss,sp??)
+		C->ctx.uc_stack.ss_sp = S->stack; //要点： 对于context,  stack需要自己分配给它,这里用S->stack传过去，相当于设置了堆栈的指针，如此使函数的调用过程中的栈信息放到了我们想要保存的位置 
 		C->ctx.uc_stack.ss_size = STACK_SIZE;
-		C->ctx.uc_link = &S->main; //这个是？？
+		C->ctx.uc_link = &S->main; //这个是当这个context返回时, resume的目标
 		S->running = id;//正在运行croutine id, 如此看来这块是非线程安全?
 		C->status = COROUTINE_RUNNING;
 		uintptr_t ptr = (uintptr_t)S;
-        //这里为何要将uintptr分为两个uint32_t传递？
+        //这里为何要将uintptr分为两个uint32_t传递？ --> man makecontext
 		makecontext(&C->ctx, (void (*)(void)) mainfunc, 2, (uint32_t)ptr, (uint32_t)(ptr>>32));
-        //保存S->main的context, 将当前上下文切换到C->ctx中去？
+        //将当前的上下文保存到S->main中，并且控制权交给C->ctx. 即去执行ctx中设置的函数等等
 		swapcontext(&S->main, &C->ctx);
         printf("coroutine:[%d] COROUTINE_READY swapcontext return\n", id);
 		break;
 	case COROUTINE_SUSPEND:
         printf("coroutine:[%d] COROUTINE_SUSPEND\n", id);
-        //将croutine的stack拷贝到S->stack末尾去，这是何意？
+        //将要唤醒的croutine的stack拷贝到S->stack末尾去，这是何意？为什么是末尾
 		memcpy(S->stack + STACK_SIZE - C->size, C->stack, C->size);
 		S->running = id;
 		C->status = COROUTINE_RUNNING;
@@ -187,15 +194,15 @@ coroutine_resume(struct schedule * S, int id) {
 static void
 _save_stack(struct coroutine *C, char *top) {
     printf("%s:%s top:%p\n", __FILE__, __FUNCTION__, top);
-    //在栈上创建一个局部变量
+    //在栈上创建一个局部变量, 以这个变量的位置为基准，往下的那一段都是函数调用的堆栈
 	char dummy = 0;
 	assert(top - &dummy <= STACK_SIZE);
 	if (C->cap < top - &dummy) {
 		free(C->stack);
 		C->cap = top-&dummy;
-		C->stack = malloc(C->cap);
+		C->stack = malloc(C->cap); //C->stack用来保存coroutine自身的栈内容
 	}
-	C->size = top - &dummy;
+	C->size = top - &dummy; //计算出需要保存的栈长度
     printf("%s:%s C->stack:%p dummy:%p C->size:%ld\n", 
             __FILE__, __FUNCTION__, C->stack, &dummy, C->size);
 	memcpy(C->stack, &dummy, C->size);
@@ -209,13 +216,15 @@ coroutine_yield(struct schedule * S) {
 	assert(id >= 0);
     //取出正在运行的croutine
 	struct coroutine * C = S->co[id];
+    //这个assert()是何意？ 这里的S->stack为何是栈上的地址？不是从堆上分配的吗
+    printf("&C:%p S->stack:%p\n", &C, S->stack);
 	assert((char *)&C > S->stack);
     //保存这个coroutine的stack
 	_save_stack(C,S->stack + STACK_SIZE);
     //使进入SUSPEND状态
 	C->status = COROUTINE_SUSPEND; 
 	S->running = -1;
-    //切换回S->main
+    //切换回S->main, 就是当初从coroutine_resume()中过来的那里
 	swapcontext(&C->ctx , &S->main);
 }
 
