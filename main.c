@@ -7,12 +7,14 @@ struct args {
 
 static void
 foo(struct schedule * S, void *ud) {
+    printf("%s:%s\n", __FILE__ , __FUNCTION__);
 	struct args * arg = ud;
 	int start = arg->n;
 	int i;
 	for (i=0;i<5;i++) {
 		printf("coroutine %d : %d\n",coroutine_running(S) , start + i);
 		coroutine_yield(S);
+		printf("%s:%s coroutine_yield return \n", __FILE__, __FUNCTION__);
 	}
 }
 
